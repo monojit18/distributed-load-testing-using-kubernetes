@@ -1,0 +1,67 @@
+#LOCUST
+=========
+
+export GKE_CLUSTER=
+export AR_REPO=
+export REGION=
+export ZONE=
+export SAMPLE_APP_LOCATION=
+
+export GKE_NODE_TYPE=e2-standard-4
+export GKE_SCOPE="https://www.googleapis.com/auth/cloud-platform"
+export PROJECT=$(gcloud config get-value project)
+#export SAMPLE_APP_TARGET=${PROJECT}.appspot.com
+export SAMPLE_APP_TARGET=<ip>>.nip.io
+
+gcloud iam service-accounts create dist-lt-svc-acc
+gcloud projects add-iam-policy-binding  ${PROJECT} --member=serviceAccount:dist-lt-svc-acc@${PROJECT}.iam.gserviceaccount.com --role=roles/artifactregistry.reader
+gcloud projects add-iam-policy-binding  ${PROJECT} --member=serviceAccount:dist-lt-svc-acc@${PROJECT}.iam.gserviceaccount.com --role=roles/container.nodeServiceAccount
+
+gcloud container clusters create ${GKE_CLUSTER} \
+--service-account=dist-lt-svc-acc@${PROJECT}.iam.gserviceaccount.com \
+--region ${REGION} \
+--machine-type ${GKE_NODE_TYPE} \
+--enable-autoscaling \
+--num-nodes 3 \
+--min-nodes 3 \
+--max-nodes 10 \
+--scopes "${GKE_SCOPE}"
+#gcloud container clusters delete ${GKE_CLUSTER} --region ${REGION}
+
+gcloud container clusters get-credentials ${GKE_CLUSTER} --region ${REGION} --project ${PROJECT}
+
+export LOCUST_IMAGE_NAME=locust-tasks
+export LOCUST_IMAGE_TAG=latest
+gcloud builds submit \
+    --tag ${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/${LOCUST_IMAGE_NAME}:${LOCUST_IMAGE_TAG} docker-image
+
+gcloud artifacts docker images list ${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO} | grep ${LOCUST_IMAGE_NAME}
+
+gcloud services enable appengine.googleapis.com
+gcloud app create --region=${SAMPLE_APP_LOCATION}
+gcloud app deploy sample-webapp/app.yaml --project=${PROJECT}
+
+envsubst < kubernetes-config/locust-master-controller.yaml.tpl | kubectl apply -f -
+envsubst < kubernetes-config/locust-worker-controller.yaml.tpl | kubectl apply -f -
+envsubst < kubernetes-config/locust-master-service.yaml.tpl | kubectl apply -f -
+
+export INTERNAL_LB_IP=$(kubectl get svc locust-master-web  \
+                               -o jsonpath="{.status.loadBalancer.ingress[0].ip}") && \
+                               echo $INTERNAL_LB_IP
+export PROXY_VM=locust-nginx-proxy       
+gcloud compute instances create-with-container ${PROXY_VM} \
+   --zone ${ZONE} \
+   --container-image gcr.io/cloud-marketplace/google/nginx1:latest \
+   --container-mount-host-path=host-path=/tmp/server.conf,mount-path=/etc/nginx/conf.d/default.conf \
+   --metadata=startup-script="#! /bin/bash
+     cat <<EOF  > /tmp/server.conf
+     server {
+         listen 8089;
+         location / {
+             proxy_pass http://${INTERNAL_LB_IP}:8089;
+         }
+     }
+EOF"
+#gcloud compute instances delete ${PROXY_VM} --zone ${ZONE}
+
+gcloud compute ssh --zone ${ZONE} ${PROXY_VM} -- -N -L 8089:localhost:8089

@@ -28,16 +28,29 @@ class MetricsTaskSet(TaskSet):
 
     def on_start(self):
         self._deviceid = str(uuid.uuid4())
+    
+    @task(100)
+    def root(self):
+        self.client.get('/', name="root")
+
+    @task(1000)
+    def download(self):
+        self.client.get('/download', name="download")
 
     @task(1)
-    def login(self):
+    def upload(self):
         self.client.post(
-            '/login', {"deviceid": self._deviceid})
+            "/upload", {"deviceid": self._deviceid, "timestamp": datetime.now()}, name="upload")
 
-    @task(999)
-    def post_metrics(self):
-        self.client.post(
-            "/metrics", {"deviceid": self._deviceid, "timestamp": datetime.now()})
+    # @task(1)
+    # def login(self):
+    #     self.client.post(
+    #         '/login', {"deviceid": self._deviceid})
+
+    # @task(999)
+    # def post_metrics(self):
+    #     self.client.post(
+    #         "/metrics", {"deviceid": self._deviceid, "timestamp": datetime.now()})
 
 
 class MetricsLocust(FastHttpUser):
